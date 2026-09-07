@@ -23,7 +23,7 @@ const getProxyOptions = (currentProxy: ProxyState | null | undefined) => {
     const username = currentProxy.urlHandler?.username;
     const password = currentProxy.urlHandler?.password;
     if (username || password) {
-        if (currentProxy.urlHandler.protocol !== 'http:') {
+        if (currentProxy.urlHandler!.protocol !== 'http:') {
             logger.warn('SOCKS/HTTPS proxy with authentication is not supported by playwright, continue without proxy');
             return {};
         }
@@ -31,7 +31,7 @@ const getProxyOptions = (currentProxy: ProxyState | null | undefined) => {
         return {
             proxy: {
                 password: decodeURIComponent(password ?? ''),
-                server: proxyServerFromUrl(currentProxy.urlHandler),
+                server: proxyServerFromUrl(currentProxy.urlHandler!),
                 username: decodeURIComponent(username ?? ''),
             },
         } satisfies Pick<LaunchOptions, 'proxy'>;
@@ -98,8 +98,13 @@ const launchBrowser = async (currentProxy?: ProxyState | null) => {
     } else {
         browser = await chromium.launch(getLaunchOptions(currentProxy));
     }
-    const context = await browser.newContext(getContextOptions());
-    return { browser, context };
+    try {
+        const context = await browser.newContext(getContextOptions());
+        return { browser, context };
+    } catch (error) {
+        await browser.close();
+        throw error;
+    }
 };
 
 const getBrowserlessEndpoint = (endpoint: string, launchOptions: BrowserlessLaunchOptions) => {
@@ -108,23 +113,22 @@ const getBrowserlessEndpoint = (endpoint: string, launchOptions: BrowserlessLaun
     return endpointURL.href;
 };
 
-const scheduleClose = (browser: Browser, timeout = 30000) => {
-    setTimeout(() => {
-        void browser.close();
-    }, timeout);
-};
+const scheduleClose = (browser: Browser, timeout = 30000) =>
+    timeout === 0
+        ? undefined
+        : setTimeout(() => {
+              void browser.close();
+          }, timeout);
 
 /**
  * @returns Playwright browser context (native `newPage()` shares state across calls)
  */
-const outPlaywright = async () => {
+export default async function outPlaywright() {
     const currentProxy = proxy.getCurrentProxy();
     const { browser, context } = await launchBrowser(currentProxy && proxy.proxyObj.url_regex === '.*' ? currentProxy : null);
     scheduleClose(browser);
     return context;
-};
-
-export default outPlaywright;
+}
 
 // No-op in Node.js environment (used by Worker build via alias)
 export const setBrowserBinding = (_binding: any) => {};
@@ -135,6 +139,7 @@ export const setBrowserBinding = (_binding: any) => {};
 export const getPlaywrightPage = async (
     url: string,
     instanceOptions: {
+        // Set to zero only when the caller always awaits destroy() in finally.
         closeTimeout?: number;
         gotoConfig?: GotoOptions;
         noGoto?: boolean;
@@ -158,37 +163,44 @@ export const getPlaywrightPage = async (
     const currentProxyState = currentProxy && allowProxy ? currentProxy : null;
     const hasProxy = Boolean(getProxyOptions(currentProxyState).proxy);
     const { browser, context } = await launchBrowser(currentProxyState);
-    scheduleClose(browser, instanceOptions.closeTimeout);
-    const page = await context.newPage();
+    const closeTimer = scheduleClose(browser, instanceOptions.closeTimeout);
+    const destroy = async () => {
+        clearTimeout(closeTimer);
+        await browser.close();
+    };
 
-    if (hasProxy && currentProxyState) {
-        logger.debug(`Proxying request in playwright via ${currentProxyState.uri}: ${url}`);
-    }
+    try {
+        const page = await context.newPage();
 
-    if (instanceOptions.onBeforeLoad) {
-        await instanceOptions.onBeforeLoad(page, context);
-    }
+        if (hasProxy && currentProxyState) {
+            logger.debug(`Proxying request in playwright via ${currentProxyState.uri}: ${url}`);
+        }
 
-    if (!instanceOptions.noGoto) {
-        try {
-            await page.goto(url, instanceOptions.gotoConfig || { waitUntil: 'domcontentloaded' });
-        } catch (error) {
-            if (hasProxy && currentProxyState && proxy.multiProxy) {
-                logger.warn(`Playwright navigation failed with proxy ${currentProxyState.uri}, marking as failed: ${error}`);
-                proxy.markProxyFailed(currentProxyState.uri);
+        if (instanceOptions.onBeforeLoad) {
+            await instanceOptions.onBeforeLoad(page, context);
+        }
+
+        if (!instanceOptions.noGoto) {
+            try {
+                await page.goto(url, instanceOptions.gotoConfig || { waitUntil: 'domcontentloaded' });
+            } catch (error) {
+                if (hasProxy && currentProxyState && proxy.multiProxy) {
+                    logger.warn(`Playwright navigation failed with proxy ${currentProxyState.uri}, marking as failed: ${error}`);
+                    proxy.markProxyFailed(currentProxyState.uri);
+                }
                 throw error;
             }
-            throw error;
         }
-    }
 
-    return {
-        context,
-        destroy: async () => {
-            await context.close();
-        },
-        page,
-    };
+        return {
+            context,
+            destroy,
+            page,
+        };
+    } catch (error) {
+        await destroy();
+        throw error;
+    }
 };
 
 export { type Page } from 'patchright';

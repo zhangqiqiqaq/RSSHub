@@ -1,5 +1,4 @@
 import { load } from 'cheerio';
-import { JSDOM } from 'jsdom';
 import { RateLimiterMemory, RateLimiterQueue } from 'rate-limiter-flexible';
 
 import { config } from '@/config';
@@ -80,10 +79,8 @@ const getRenderData = (uid) => {
                 Cookie: cookie,
             },
         });
-        const dom = new JSDOM(response);
-        const document = dom.window.document;
-        const scriptElement = document.querySelector('#__RENDER_DATA__');
-        const innerText = scriptElement ? scriptElement.textContent || '{}' : '{}';
+        const $ = load(response);
+        const innerText = $('#__RENDER_DATA__').first().text() || '{}';
         const renderData = JSON.parse(decodeURIComponent(innerText));
         const accessId = renderData.access_id;
         return accessId;
@@ -121,9 +118,11 @@ const getWbiVerifyString = () => {
         //     62, 11, 36, 20, 34, 44, 52,
         // ];
         const array = JSON.parse(jsResponse.match(/\[(?:\d+,){63}\d+\]/));
-        const o = [];
+        const o: any[] = [];
         for (const t of array) {
-            r.charAt(t) && o.push(r.charAt(t));
+            if (r.charAt(t)) {
+                o.push(r.charAt(t));
+            }
         }
         return o.join('').slice(0, 32);
     });
@@ -326,7 +325,7 @@ const getAidFromBvid = async (bvid) => {
         if (response.data && response.data.data && response.data.data.aid) {
             aid = response.data.data.aid;
         }
-        cache.set(key, aid);
+        cache.set(key, aid ?? '');
     }
     return aid;
 };
@@ -353,7 +352,7 @@ const getArticleDataFromCvid = async (cvid, uid) => {
             const newFormatData = JSON.parse(
                 $('script:contains("window.__INITIAL_STATE__")')
                     .text()
-                    .match(/window\.__INITIAL_STATE__\s*=\s*(\S.*?)?;\(/)[1]
+                    .match(/window\.__INITIAL_STATE__\s*=\s*(\S.*?)?;\(/)![1]
             );
 
             if (newFormatData?.readInfo?.opus?.content?.paragraphs) {
@@ -365,13 +364,11 @@ const getArticleDataFromCvid = async (cvid, uid) => {
                                 description += `<p>${text.word.words}</p>`;
                             }
                         }
-                    }
-                    if (element.para_type === 2) {
+                    } else if (element.para_type === 2) {
                         for (const image of element.pic.pics) {
                             description += `<p ><img src="${image.url}@progressive.webp"></p>`;
                         }
-                    }
-                    if (element.para_type === 3 && element.line?.pic?.url) {
+                    } else if (element.para_type === 3 && element.line?.pic?.url) {
                         description += `<figure><img src="${element.line.pic.url}"></figure>`;
                     }
                 }

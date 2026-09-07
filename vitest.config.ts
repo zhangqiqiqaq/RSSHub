@@ -7,10 +7,10 @@ export default defineConfig({
         watch: false,
         coverage: {
             include: ['lib/**/*.ts', 'lib/**/*.tsx'],
-            exclude: ['lib/routes/**', 'lib/routes-deprecated/**'],
+            exclude: ['lib/routes/**'],
         },
         testTimeout: 10000,
         setupFiles: ['./lib/setup.test.ts'],
-        exclude: [...configDefaults.exclude, './lib/setup.test.ts'],
+        exclude: [...configDefaults.exclude, './lib/setup.test.ts', '**/*.worker.test.ts'],
     },
 });
